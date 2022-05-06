@@ -144,6 +144,7 @@ public class UranusExporter {
         }
         return tweetText.substring(0, lastSpaceLoc);
     }
+
     private String readProcessOutput(Process process) {
         StringBuilder stdError = new StringBuilder();
         BufferedReader errorReader = new BufferedReader(
@@ -156,7 +157,7 @@ public class UranusExporter {
             int exitVal = process.waitFor();
             if (exitVal != 0) {
                 return stdError.toString().strip();
-            }else{
+            } else {
                 return "";
             }
         } catch (IOException ioe) {
@@ -168,6 +169,7 @@ public class UranusExporter {
         }
         return null;
     }
+
     private void downloadTweetMedia(HttpResponse<String> tweet, String dirPath) {
         JSONObject JSONResponse = new JSONObject(tweet.body());
         if (JSONResponse.has("errors") || !JSONResponse.has("data") || !JSONResponse.has("includes")) {
@@ -194,7 +196,6 @@ public class UranusExporter {
         //add support for gifs later also fix the way video titles are displayed when downloaded.
         if (mediaArr.getJSONObject(0).getString("type").equals("video")) {
             String videoTitle = tweetUsername + "_" + tweetID;
-            System.out.println("yt-dlp -o \"" + videoTitle + "\" " + extractTweetLink(tweetData));
             downloadMedia(dirPath, "yt-dlp -o \'" + videoTitle + ".%(ext)s\' " + extractTweetLink(tweetData));
             System.out.println("Video \"" + videoTitle + "\" downloaded to \'" + dirPath + "\'");
         } else if (mediaArr.getJSONObject(0).getString("type").equals("photo")) {
@@ -219,8 +220,8 @@ public class UranusExporter {
         downloadTweetMedia(executeTwitterAPIRequest(tweetURL), dirPath);
     }
 
-    public List<List<String>> retrieveLikedTweets() {
-        String likedTweetRequestURL = "https://api.twitter.com/2/users/" + this.userID + "/liked_tweets";
+    public List<List<String>> retrieveLikedTweets(String userID) {
+        String likedTweetRequestURL = "https://api.twitter.com/2/users/" + userID + "/liked_tweets";
         String paginationToken = "";
         List<List<String>> likedList = new ArrayList<List<String>>();
         int count = 0;
@@ -234,7 +235,7 @@ public class UranusExporter {
             }
             JSONObject responseJSON = new JSONObject(twitterAPIResponse.body());
             JSONObject responseHeaders = new JSONObject(twitterAPIResponse.headers().map());
-            likedList.add(this.parseLikedTweetsResponse(responseJSON));
+            likedList.add(this.parseTweetResponse(responseJSON));
             if (Integer.parseInt(responseHeaders.getJSONArray("x-rate-limit-remaining").get(0).toString()) == 0) {
                 try {
                     this.pauseExecution(responseHeaders.getJSONArray("x-rate-limit-reset").get(0).toString());
@@ -242,40 +243,86 @@ public class UranusExporter {
                     e.printStackTrace();
                 }
             }
-            System.out.println(count++ + " pagination=" + paginationToken);
+            System.out.println("Retrieved page " + (count + 1) + " of tweets for " + userID);
             paginationToken = this.getNextPaginationToken(responseJSON);
 
         } while (paginationToken != null);
         return likedList;
     }
 
+    public List<List<String>> retrieveTweets(String userID, List<String> excludes) {
+        String likedTweetRequestURL = "https://api.twitter.com/2/users/" + userID + "/tweets?max_results=100&expansions=referenced_tweets.id";
+        if (!excludes.isEmpty()) {
+            String excludeString = "&exclude=";
+            for (String exclusion : excludes) {
+                excludeString += exclusion + ",";
+            }
+            likedTweetRequestURL = likedTweetRequestURL + excludeString.substring(0, excludeString.length() - 1);
+        }
+        String paginationToken = "";
+        List<List<String>> tweetList = new ArrayList<List<String>>();
+        int count = 0;
+        do {
+            HttpResponse<String> twitterAPIResponse = null;
+            if (paginationToken.isEmpty()) {
+                twitterAPIResponse = this.executeTwitterAPIRequest(likedTweetRequestURL);
+            } else {
+                twitterAPIResponse = this.executeTwitterAPIRequest(likedTweetRequestURL + "&pagination_token=" + paginationToken);
+            }
+            JSONObject responseJSON = new JSONObject(twitterAPIResponse.body());
+            JSONObject responseHeaders = new JSONObject(twitterAPIResponse.headers().map());
+            tweetList.add(this.parseLikedTweetsResponse(responseJSON));
+            if (Integer.parseInt(responseHeaders.getJSONArray("x-rate-limit-remaining").get(0).toString()) == 0) {
+                try {
+                    this.pauseExecution(responseHeaders.getJSONArray("x-rate-limit-reset").get(0).toString());
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+            System.out.println("Retrieved page " + (count + 1) + " of tweets for " + userID);
+            paginationToken = this.getNextPaginationToken(responseJSON);
+        } while (paginationToken != null);
+        return tweetList;
+    }
+
+    private List<String> parseTweetResponse(JSONObject likedTweetsResponse) {
+        List<String> tweetList = new ArrayList<String>();
+        if (likedTweetsResponse.has("data")) {
+            JSONArray tweetArray = likedTweetsResponse.getJSONArray("data");
+            for (int index = 0; index < tweetArray.length(); index++) {
+                if (tweetArray.getJSONObject(index).has("id") && !tweetArray.getJSONObject(index).has("referenced_tweets")) {
+                    String curTweetID = tweetArray.getJSONObject(index).getString("id");
+                    tweetList.add(curTweetID);
+                }
+            }
+        } else {
+            System.err.println("Encountered response with no data: " + likedTweetsResponse.toString());
+        }
+        return tweetList;
+    }
+
+    public int deepListSize(List<List<String>> listOfLists) {
+        int size = 0;
+        for (List list : listOfLists) {
+            size += list.size();
+        }
+        return size;
+    }
+
     public static void main(String[] args) throws Exception {
         String userID = args[0];
         String bearerToken = args[1];
         UranusExporter test = new UranusExporter(userID, bearerToken);
-        int count = 0;
-        try (BufferedReader br = new BufferedReader(new FileReader("liked_tweet_ids.txt"))) {
-            StringBuilder sb = new StringBuilder();
-            String line = br.readLine();
-            while (line != null && count < 75) {
-                sb.append(line);
-                sb.append(System.lineSeparator());
-                line = br.readLine();
-                test.downloadTweetMedia(line, "C:\\Users\\nietoaj\\Documents\\( ͡° ͜ʖ ͡°)");
-                count++;
+        List<String> exclusions = new ArrayList<String>();
+        exclusions.add("retweets");
+        exclusions.add("replies");
+        List<List<String>> tweets = test.retrieveTweets("", exclusions);
+        System.out.println("Retrieved " + test.deepListSize(tweets) + " tweets");
+        for (List<String> list : tweets) {
+            for (String tweet : list) {
+                test.downloadTweetMedia(tweet, "C:\\Users\\nietoaj\\Documents\\( ͡° ͜ʖ ͡°)\\");
             }
-            String everything = sb.toString();
-            //System.out.println(everything);
         }
-//        List<List<String>> likedList = test.retrieveLikedTweets();
-//        int totalCount = 0;
-//        for (List<String> list : likedList) {
-//            for (String tweet : list) {
-//                System.out.println(tweet);
-//                ++totalCount;
-//            }
-//        }
-//        System.out.println(totalCount);
 
 
     }
