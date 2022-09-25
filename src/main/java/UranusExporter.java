@@ -1,5 +1,4 @@
 import org.json.JSONArray;
-import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.*;
@@ -96,6 +95,7 @@ public class UranusExporter {
             dirPath = ".";
         }
         if (!Files.isDirectory(Paths.get(dirPath))) {
+            new File(dirPath).mkdirs();
             System.err.println("The directory path does not exist, is not valid, or cannot be determined: " + dirPath);
             return;
         }
@@ -107,11 +107,6 @@ public class UranusExporter {
             System.err.println("There was an error downloading the media.");
             ioe.printStackTrace();
         }
-//        String processOutput = readProcessOutput(process);
-//        if(!processOutput.isEmpty()) {
-//            System.err.println(processOutput);
-//        }
-        //System.out.println(readProcessOutput(process));
     }
 
     private void changeMediaInfo(String dirPath, String filePath, String cmdArgs) {
@@ -134,40 +129,6 @@ public class UranusExporter {
         String tweetText = tweetJSON.getString("text");
         int lastSpaceLoc = tweetText.lastIndexOf(" ") + 1;
         return tweetText.substring(lastSpaceLoc);
-    }
-
-    private String extractTweetText(JSONObject tweetJSON) {
-        String tweetText = tweetJSON.getString("text");
-        int lastSpaceLoc = tweetText.lastIndexOf(" ");
-        if (lastSpaceLoc == -1) {
-            return "";
-        }
-        return tweetText.substring(0, lastSpaceLoc);
-    }
-
-    private String readProcessOutput(Process process) {
-        StringBuilder stdError = new StringBuilder();
-        BufferedReader errorReader = new BufferedReader(
-                new InputStreamReader(process.getErrorStream()));
-        try {
-            String line;
-            while ((line = errorReader.readLine()) != null) {
-                stdError.append(line + "\n");
-            }
-            int exitVal = process.waitFor();
-            if (exitVal != 0) {
-                return stdError.toString().strip();
-            } else {
-                return "";
-            }
-        } catch (IOException ioe) {
-            System.err.println("There was an error reading the process results.");
-            ioe.printStackTrace();
-        } catch (InterruptedException ie) {
-            System.err.println("The reader(s) was interrupted.");
-            ie.printStackTrace();
-        }
-        return null;
     }
 
     private void downloadTweetMedia(HttpResponse<String> tweet, String dirPath) {
@@ -196,7 +157,8 @@ public class UranusExporter {
         //add support for gifs later also fix the way video titles are displayed when downloaded.
         if (mediaArr.getJSONObject(0).getString("type").equals("video")) {
             String videoTitle = tweetUsername + "_" + tweetID;
-            downloadMedia(dirPath, "yt-dlp -o \'" + videoTitle + ".%(ext)s\' " + extractTweetLink(tweetData));
+            downloadMedia(dirPath, "youtube-dl -o \'" + videoTitle + ".%(ext)s\' " + extractTweetLink(tweetData));
+            System.out.println("youtube-dl-o \'" + videoTitle + ".%(ext)s\' " + extractTweetLink(tweetData));
             System.out.println("Video \"" + videoTitle + "\" downloaded to \'" + dirPath + "\'");
         } else if (mediaArr.getJSONObject(0).getString("type").equals("photo")) {
             for (int index = 0; index < mediaArr.length(); index++) {
@@ -243,7 +205,7 @@ public class UranusExporter {
                     e.printStackTrace();
                 }
             }
-            System.out.println("Retrieved page " + (count + 1) + " of tweets for " + userID);
+            System.out.println("Retrieved page " + (count++ + 1) + " of tweets for " + userID);
             paginationToken = this.getNextPaginationToken(responseJSON);
 
         } while (paginationToken != null);
@@ -251,7 +213,7 @@ public class UranusExporter {
     }
 
     public List<List<String>> retrieveTweets(String userID, List<String> excludes) {
-        String likedTweetRequestURL = "https://api.twitter.com/2/users/" + userID + "/tweets?max_results=100&expansions=referenced_tweets.id";
+        String likedTweetRequestURL = "https://api.twitter.com/2/users/" + userID + "/tweets?expansions=author_id&max_results=100";
         if (!excludes.isEmpty()) {
             String excludeString = "&exclude=";
             for (String exclusion : excludes) {
@@ -259,6 +221,7 @@ public class UranusExporter {
             }
             likedTweetRequestURL = likedTweetRequestURL + excludeString.substring(0, excludeString.length() - 1);
         }
+        System.out.println(likedTweetRequestURL);
         String paginationToken = "";
         List<List<String>> tweetList = new ArrayList<List<String>>();
         int count = 0;
@@ -279,7 +242,7 @@ public class UranusExporter {
                     e.printStackTrace();
                 }
             }
-            System.out.println("Retrieved page " + (count + 1) + " of tweets for " + userID);
+            System.out.println("Retrieved page " + (count++) + " of tweets for " + userID);
             paginationToken = this.getNextPaginationToken(responseJSON);
         } while (paginationToken != null);
         return tweetList;
@@ -309,21 +272,67 @@ public class UranusExporter {
         return size;
     }
 
-    public static void main(String[] args) throws Exception {
+    public String getUserID(String username) {
+        String useridURL = "https://api.twitter.com/2/users/by/username/" + username;
+        HttpResponse<String> idResponse = executeTwitterAPIRequest(useridURL);
+        JSONObject responseJSON = new JSONObject(idResponse.body());
+        if (responseJSON.has("data") && responseJSON.getJSONObject("data").has("id"))
+            return responseJSON.getJSONObject("data").getString("id");
+        else {
+            return null;
+        }
+    }
+
+    private List<String> getUsernames(String filePath) {
+        List<String> usernames = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
+            String line = reader.readLine();
+            while (line != null) {
+                usernames.add(line.strip());
+                line = reader.readLine();
+            }
+        } catch (FileNotFoundException fne) {
+            System.err.println("Could not find the file specified.");
+            System.exit(-1);
+        } catch (IOException ioe) {
+            System.err.println("There was a general io exception.");
+        }
+        return usernames;
+    }
+
+    public static void main(String[] args) {
         String userID = args[0];
         String bearerToken = args[1];
         UranusExporter test = new UranusExporter(userID, bearerToken);
-        List<String> exclusions = new ArrayList<String>();
-        exclusions.add("retweets");
-        exclusions.add("replies");
-        List<List<String>> tweets = test.retrieveTweets("", exclusions);
-        System.out.println("Retrieved " + test.deepListSize(tweets) + " tweets");
-        for (List<String> list : tweets) {
-            for (String tweet : list) {
-                test.downloadTweetMedia(tweet, "C:\\Users\\nietoaj\\Documents\\( ͡° ͜ʖ ͡°)\\");
+        String filePath = "";
+        System.out.println(test.getUsernames(filePath));
+        List<String> usernames = test.getUsernames(filePath);
+        for (String username : usernames) {
+            System.out.println("Now retrieving username: " + username);
+            List<String> exclusions = new ArrayList<String>();
+            exclusions.add("retweets");
+            exclusions.add("replies");
+            String otherUserID = test.getUserID(username);
+            List<List<String>> tweets = test.retrieveTweets(otherUserID, exclusions);
+            //List<List<String>> tweets = test.retrieveLikedTweets(otherUserID);
+            System.out.println("Retrieved " + test.deepListSize(tweets) + " tweets");
+            System.out.println("The number of lists are: " + tweets.size());
+//            try (BufferedWriter writer = new BufferedWriter(new FileWriter(""))) {
+//                for (List<String> list : tweets) {
+//                    for (int i = 0; i < list.size(); i++) {
+//                        writer.write(list.get(i) + "\n");
+//                    }
+//                }
+//            } catch (IOException e) {
+//                e.printStackTrace();
+//            }
+            for (List<String> list : tweets) {
+                for (int i = 0; i < list.size(); i++) {
+                    test.downloadTweetMedia(list.get(i), "" + username);
+                    //test.downloadTweetMedia(list.get(i), "\\");
+                }
             }
         }
-
-
     }
+
 }
